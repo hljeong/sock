@@ -1,3 +1,5 @@
+#pragma once
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -11,8 +13,6 @@
 namespace sock {
 
 // todo: add logger hook?
-
-using namespace std::chrono_literals;
 
 constexpr uint32_t operator""_KiB(const unsigned long long kib) {
   return kib * 1024;
@@ -80,6 +80,8 @@ public:
     m_addr.sin_family = AF_INET;
     m_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     m_addr.sin_port = htons(port);
+
+    open();
   }
 
   virtual ~Server() {
@@ -251,7 +253,8 @@ public:
     return true;
   }
 
-  bool start(std::chrono::milliseconds interval = 50ms) {
+  bool
+  start(std::chrono::milliseconds interval = std::chrono::milliseconds(50)) {
     if (m_running) {
       return false;
     }
@@ -321,22 +324,3 @@ private:
 };
 
 } // namespace sock
-
-int main() {
-  sock::Server s([](auto data, auto len) {
-    printf("len = %u\n", len);
-    printf("data = ");
-    for (uint32_t i = 0; i < len; ++i) {
-      if (i) {
-        printf(" ");
-      }
-      printf("%02x", data[i]);
-    }
-    printf("\n");
-  });
-  s.open();
-  s.start();
-  std::this_thread::sleep_for(std::chrono::seconds(15));
-  s.stop();
-  s.close();
-}

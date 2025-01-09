@@ -6,7 +6,7 @@ KiB = 1024
 
 class Message:
     MAGIC = 0x94_84_86_95
-    MAX_LEN = 4 * KiB
+    MAX_LEN = 8 * KiB
 
 
 class Client:
@@ -37,7 +37,8 @@ class Client:
             self.socket.connect(("localhost", self.port))
         except socket.error:
             self.close()
-            return False
+            raise
+
         return True
 
     def send(self, data):
@@ -57,8 +58,60 @@ class Client:
             self.socket.sendall(data)
         except socket.error:
             self.close()
-            return False
+            raise
+
         return True
+
+    def _recv(self, n):
+        if self.socket is None:
+            return None
+
+        data = bytes()
+        while len(data) < n:
+            recv_data = self.socket.recv(n - len(data))
+            if len(recv_data) == 0:
+                # connection closed
+                self.close()
+                return None
+            data += recv_data
+
+        return data
+
+    def receive(self):
+        # todo: dont assume channel integrity and correlate?
+        magic_raw = self._recv(4)
+        if magic_raw is None:
+            self.close()
+            raise RuntimeError("could not recv magic")
+
+        # todo: dont raise error if correlating
+        magic = int.from_bytes(magic_raw, "little")
+        if magic != Message.MAGIC:
+            self.close()
+            raise RuntimeError(
+                f"bad magic: 0x{magic:08x}, expected 0x{Message.MAGIC:08x}"
+            )
+
+        # todo: dont raise error if correlating
+        len_raw = self._recv(4)
+        if len_raw is None:
+            self.close()
+            raise RuntimeError("could not recv len")
+
+        # todo: dont raise error if correlating
+        len = int.from_bytes(len_raw, "little")
+        if len > Message.MAX_LEN:
+            self.close()
+            raise RuntimeError(f"bad len: {len}, max {Message.MAX_LEN}")
+
+        # todo: dont raise error if correlating
+        data_len = len - 8
+        data = self._recv(data_len)
+        if data is None:
+            self.close()
+            raise RuntimeError("could not recv data")
+
+        return data
 
 
 def main():
