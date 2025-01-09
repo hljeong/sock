@@ -112,15 +112,3 @@ class Client:
             raise RuntimeError("could not recv data")
 
         return data
-
-
-def main():
-    c = Client()
-    c.open()
-    c.connect()
-    c.send(b"\x12\x34")
-    c.close()
-
-
-if __name__ == "__main__":
-    main()

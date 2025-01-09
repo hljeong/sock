@@ -1,6 +1,5 @@
-CC = g++ -Wall -g -std=c++17
-
 # todo: python version, venv?
+CC = g++ -Wall -g -std=c++17
 PY = python3
 
 .PHONY: all clean test cpp
