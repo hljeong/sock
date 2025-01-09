@@ -9,6 +9,9 @@
 #include <unistd.h>
 
 namespace sock {
+
+// todo: add logger hook?
+
 using namespace std::chrono_literals;
 
 constexpr uint32_t operator""_KiB(const unsigned long long kib) {
@@ -17,7 +20,7 @@ constexpr uint32_t operator""_KiB(const unsigned long long kib) {
 
 union Message {
   static constexpr uint32_t MAGIC = 0x94'84'86'95u;
-  static constexpr uint32_t MAX_LEN = 4_KiB;
+  static constexpr uint32_t MAX_LEN = 8_KiB;
 
   struct __attribute__((packed)) {
     uint32_t magic;
@@ -70,8 +73,8 @@ union Message {
 class Server {
 public:
   Server(
-      const std::function<void(uint8_t *, uint32_t)> &callback =
-          [](uint8_t *, uint32_t) {},
+      const std::function<void(const uint8_t *, uint32_t)> &callback =
+          [](auto, auto) {},
       uint16_t port = 3727)
       : m_callback(callback) {
     m_addr.sin_family = AF_INET;
@@ -85,7 +88,7 @@ public:
     close();
   }
 
-  inline bool open() {
+  bool open() {
     if (m_socket >= 0) {
       return false;
     }
@@ -120,7 +123,7 @@ public:
     return true;
   }
 
-  inline bool close() {
+  bool close() {
     if (m_socket < 0) {
       return false;
     }
@@ -133,7 +136,7 @@ public:
     return true;
   }
 
-  inline bool connect() {
+  bool connect() {
     if (m_client_socket >= 0) {
       return false;
     }
@@ -153,7 +156,7 @@ public:
     return true;
   }
 
-  inline bool disconnect() {
+  bool disconnect() {
     if (m_client_socket < 0) {
       return false;
     }
@@ -161,6 +164,7 @@ public:
     if (::close(m_client_socket) < 0) {
       return false;
     }
+
     m_client_socket = -1;
 
     if (!msg.clear()) {
@@ -170,13 +174,57 @@ public:
     return true;
   }
 
-  inline bool receive() {
-    ssize_t n = ::recv(m_client_socket, msg.raw + msg.level,
-                       Message::MAX_LEN - msg.level, 0);
+  bool send(const std::vector<uint8_t> &data) {
+    return send(&data[0], data.size());
+  }
+
+  bool send(const uint8_t *data, uint32_t len) {
+    if (m_socket < 0) {
+      return false;
+    }
+
+    if (m_client_socket < 0) {
+      return false;
+    }
+
+    if (len > Message::MAX_LEN - 8) {
+      return false;
+    }
+
+    if (!send_raw(Message::MAGIC)) {
+      return false;
+    }
+
+    if (!send_raw(len + 8)) {
+      return false;
+    }
+
+    if (!send_raw(data, len)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  bool receive() {
+    if (m_socket < 0) {
+      return false;
+    }
+
+    if (m_client_socket < 0) {
+      return false;
+    }
+
+    const ssize_t n = ::recv(m_client_socket, msg.raw + msg.level,
+                             Message::MAX_LEN - msg.level, 0);
     if (n == 0) {
       return disconnect();
     } else if (n < 0) {
-      return errno == EAGAIN || errno == EWOULDBLOCK;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return true;
+      } else {
+        return false;
+      }
     }
 
     msg.level += n;
@@ -189,7 +237,7 @@ public:
     return true;
   }
 
-  inline bool dispatch() {
+  bool dispatch() {
     if (m_socket < 0) {
       return false;
     }
@@ -203,13 +251,13 @@ public:
     return true;
   }
 
-  inline bool start(std::chrono::milliseconds interval = 50ms) {
+  bool start(std::chrono::milliseconds interval = 50ms) {
     if (m_running) {
       return false;
     }
 
     m_running = true;
-    m_thread = std::thread([&]() {
+    m_thread = std::thread([=]() {
       while (m_running) {
         dispatch();
         std::this_thread::sleep_for(interval);
@@ -218,7 +266,7 @@ public:
     return true;
   }
 
-  inline bool stop() {
+  bool stop() {
     if (!m_running) {
       return false;
     }
@@ -233,20 +281,49 @@ public:
   }
 
 private:
+  template <typename T> bool send_raw(const T &data) {
+    return send_raw(reinterpret_cast<const uint8_t *>(&data), sizeof(T));
+  }
+
+  bool send_raw(const uint8_t *data, uint32_t len) {
+    // todo: are these checks needed in private member functions?
+    if (m_socket < 0) {
+      return false;
+    }
+
+    if (m_client_socket < 0) {
+      return false;
+    }
+
+    const ssize_t n = ::send(m_client_socket, data, len, 0);
+    // todo: possibly split into different cases:
+    //   - n < 0
+    //   - n == 0
+    //   - n > 0 && n < len
+    //   - n > len ???
+    if (n != len) {
+      disconnect();
+      return false;
+    }
+
+    return true;
+  }
+
   sockaddr_in m_addr{};
   int m_socket = -1;
   int m_client_socket = -1;
 
   Message msg{};
-  std::function<void(uint8_t *, uint32_t)> m_callback;
+  std::function<void(const uint8_t *, uint32_t)> m_callback;
 
   std::thread m_thread{};
   std::atomic_bool m_running = false;
 };
+
 } // namespace sock
 
 int main() {
-  sock::Server s([](uint8_t *data, uint32_t len) {
+  sock::Server s([](auto data, auto len) {
     printf("len = %u\n", len);
     printf("data = ");
     for (uint32_t i = 0; i < len; ++i) {
