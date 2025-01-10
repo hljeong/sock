@@ -2,7 +2,7 @@
 CC = g++ -Wall -g -std=c++17
 PY = python3
 
-.PHONY: all clean test cpp
+.PHONY: all clean test cpp py
 
 all: test
 

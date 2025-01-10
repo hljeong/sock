@@ -7,6 +7,7 @@
 #include <functional>
 #include <netinet/in.h>
 #include <optional>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
 
@@ -95,7 +96,8 @@ public:
       return false;
     }
 
-    if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    m_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (m_socket < 0) {
       return false;
     }
 
@@ -145,8 +147,9 @@ public:
 
     sockaddr client_addr{};
     socklen_t client_addrlen = sizeof(client_addr);
-    if ((m_client_socket = accept(m_socket, &client_addr, &client_addrlen)) <
-        0) {
+    m_client_socket =
+        accept4(m_socket, &client_addr, &client_addrlen, SOCK_CLOEXEC);
+    if (m_client_socket < 0) {
       return errno == EAGAIN || errno == EWOULDBLOCK;
     }
 
