@@ -15,14 +15,22 @@ std::size_t test_data_idx = 0;
 
 Server *s;
 
+#define safe_assert(condition)                                                 \
+  do {                                                                         \
+    if (!(condition)) {                                                        \
+      delete s;                                                                \
+    }                                                                          \
+    assert(condition);                                                         \
+  } while (false)
+
 void callback(const uint8_t *data, const uint32_t len) {
-  assert(test_data_idx < all_test_data.size());
+  safe_assert(test_data_idx < all_test_data.size());
 
   const TestData &test_data = all_test_data[test_data_idx++];
-  assert(len == test_data.size());
+  safe_assert(len == test_data.size());
 
   for (std::size_t i = 0; i < test_data.size(); ++i) {
-    assert(data[i] == test_data[i]);
+    safe_assert(data[i] == test_data[i]);
   }
 
   s->send(data, len);
@@ -36,7 +44,7 @@ int main() {
   s->stop();
   s->close();
 
-  assert(test_data_idx == all_test_data.size());
+  safe_assert(test_data_idx == all_test_data.size());
 
   delete s;
 }

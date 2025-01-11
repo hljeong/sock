@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <fcntl.h>
 #include <functional>
 #include <netinet/in.h>

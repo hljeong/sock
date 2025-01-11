@@ -1,6 +1,8 @@
 import socket
 import struct
 
+# todo: fix error handling
+
 KiB = 1024
 
 
@@ -34,7 +36,7 @@ class Client:
             return False
 
         try:
-            self.socket.connect(("localhost", self.port))
+            self.socket.connect(("", self.port))
         except socket.error:
             self.close()
             raise
@@ -46,7 +48,7 @@ class Client:
             return False
 
         if not isinstance(data, bytes):
-            return False
+            raise ValueError()
 
         if len(data) > Message.MAX_LEN - 8:
             return False
@@ -64,15 +66,13 @@ class Client:
 
     def _recv(self, n):
         if self.socket is None:
-            return None
+            raise RuntimeError("socket closed")
 
         data = bytes()
         while len(data) < n:
             recv_data = self.socket.recv(n - len(data))
             if len(recv_data) == 0:
-                # connection closed
-                self.close()
-                return None
+                raise RuntimeError("connection closed")
             data += recv_data
 
         return data
