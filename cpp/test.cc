@@ -7,8 +7,8 @@ using namespace sock;
 using TestData = std::vector<uint8_t>;
 
 std::vector<TestData> all_test_data = {
-    {},
-    {0x12, 0x34},
+    {0x12},
+    {0x34, 0x56},
 };
 
 std::size_t test_data_idx = 0;
@@ -37,11 +37,13 @@ void callback(const uint8_t *data, const uint32_t len) {
 }
 
 int main() {
+  using namespace std::chrono;
+  using namespace std::this_thread;
+
   s = new Server(callback);
 
-  s->start();
-  std::this_thread::sleep_for(std::chrono::seconds(1));
-  s->stop();
+  s->start(5s);
+  s->wait_for_stop();
   s->close();
 
   safe_assert(test_data_idx == all_test_data.size());

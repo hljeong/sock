@@ -12,6 +12,9 @@ class Message:
 
 
 class Client:
+    class ServerClosedError(Exception):
+        pass
+
     def __init__(self, port=3727):
         self.socket = None
         self.port = port
@@ -72,7 +75,7 @@ class Client:
         while len(data) < n:
             recv_data = self.socket.recv(n - len(data))
             if len(recv_data) == 0:
-                raise RuntimeError("connection closed")
+                raise Client.ServerClosedError("connection closed")
             data += recv_data
 
         return data

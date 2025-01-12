@@ -12,6 +12,8 @@
 #include <thread>
 #include <unistd.h>
 
+// todo: exception handling
+
 namespace sock {
 
 // todo: add logger hook?
@@ -77,8 +79,8 @@ public:
   Server(
       const std::function<void(const uint8_t *, uint32_t)> &callback =
           [](auto, auto) {},
-      uint16_t port = 3727)
-      : m_callback(callback) {
+      uint16_t port = 3727, bool close_on_empty = true)
+      : m_callback(callback), m_close_on_empty(close_on_empty) {
     m_addr.sin_family = AF_INET;
     m_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     m_addr.sin_port = htons(port);
@@ -87,8 +89,8 @@ public:
   }
 
   virtual ~Server() {
-    stop();
     disconnect();
+    stop();
     close();
   }
 
@@ -236,6 +238,12 @@ public:
     msg.level += n;
     msg.correlate();
     while (msg.valid()) {
+      // todo: remove magic number
+      if (msg.len == 8 && m_close_on_empty) {
+        m_stop_signaled = true;
+        return true;
+      }
+
       m_callback(msg.data, msg.len - 8);
       msg.shift();
     }
@@ -257,20 +265,25 @@ public:
     return true;
   }
 
-  bool
-  start(std::chrono::milliseconds interval = std::chrono::milliseconds(50)) {
-    if (m_running) {
-      return false;
-    }
+  template <typename T, typename U> bool start(T timeout, U interval) {
+    using namespace std::chrono;
+    return start(duration_cast<seconds>(timeout),
+                 duration_cast<milliseconds>(interval));
+  }
 
-    m_running = true;
-    m_thread = std::thread([=]() {
-      while (m_running) {
-        dispatch();
-        std::this_thread::sleep_for(interval);
-      }
-    });
-    return true;
+  // template parameters cannot be deduced from default arguments,
+  // i.e., template <typename T, typename U> bool start(T timeout = 0s, U
+  // interval = 50ms) is not possible
+  // manually overloading to achieve the same effect here
+  // see: https://stackoverflow.com/a/18981056
+  template <typename T> bool start(T timeout) {
+    using namespace std::chrono;
+    return start(duration_cast<seconds>(timeout), 50ms);
+  }
+
+  bool start() {
+    using namespace std::chrono;
+    return start(0s);
   }
 
   bool stop() {
@@ -278,18 +291,49 @@ public:
       return false;
     }
 
-    if (!m_thread.joinable()) {
-      return false;
-    }
-
-    m_running = false;
-    m_thread.join();
+    m_stop_signaled = true;
+    wait_for_stop();
     return true;
+  }
+
+  bool running() const { return m_running; }
+
+  bool stopped() const { return !m_running; }
+
+  template <typename T, typename U> void wait_for_stop(T timeout, U interval) {
+    using namespace std::chrono;
+    return wait_for_stop(duration_cast<seconds>(timeout),
+                         duration_cast<milliseconds>(interval));
+  }
+
+  template <typename T> void wait_for_stop(T timeout) {
+    using namespace std::chrono;
+    wait_for_stop(duration_cast<seconds>(timeout), 50ms);
+  }
+
+  void wait_for_stop() {
+    using namespace std::chrono;
+    wait_for_stop(0s);
   }
 
 private:
   template <typename T> bool send_raw(const T &data) {
     return send_raw(reinterpret_cast<const uint8_t *>(&data), sizeof(T));
+  }
+
+  // clean up after server stopped
+  bool reset() {
+    if (m_running) {
+      return false;
+    }
+
+    if (!m_thread.joinable()) {
+      return false;
+    }
+
+    m_stop_signaled = false;
+    m_thread.join();
+    return true;
   }
 
   bool send_raw(const uint8_t *data, uint32_t len) {
@@ -322,9 +366,55 @@ private:
 
   Message msg{};
   std::function<void(const uint8_t *, uint32_t)> m_callback;
+  bool m_close_on_empty;
 
   std::thread m_thread{};
+  std::atomic_bool m_stop_signaled = false;
   std::atomic_bool m_running = false;
 };
+
+template <>
+inline bool Server::start<std::chrono::seconds, std::chrono::milliseconds>(
+    std::chrono::seconds timeout, std::chrono::milliseconds interval) {
+  using namespace std::chrono;
+  using namespace std::this_thread;
+
+  if (m_running) {
+    return false;
+  }
+
+  m_running = true;
+  const bool live_forever = timeout == 0s;
+  const auto end = steady_clock::now() + timeout;
+  m_thread = std::thread([=]() {
+    while (!m_stop_signaled && (live_forever || steady_clock::now() < end)) {
+      dispatch();
+      sleep_for(interval);
+    }
+    m_running = false;
+  });
+  return true;
+}
+
+template <>
+inline void
+Server::wait_for_stop<std::chrono::seconds, std::chrono::milliseconds>(
+    std::chrono::seconds timeout, std::chrono::milliseconds interval) {
+  using namespace std::chrono;
+  using namespace std::this_thread;
+
+  if (!m_running) {
+    return;
+  }
+
+  // todo: this timeout logic is duplicated, possible to extract?
+  const bool wait_forever = timeout == 0s;
+  const auto end = steady_clock::now();
+  while (m_running && (wait_forever || steady_clock::now() < end)) {
+    sleep_for(interval);
+  }
+
+  reset();
+}
 
 } // namespace sock

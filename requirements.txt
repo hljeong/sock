@@ -2,6 +2,6 @@ exceptiongroup==1.2.2
 iniconfig==2.0.0
 packaging==24.2
 pluggy==1.5.0
--e git+ssh://git@github.com/hljeong/py_utils.git@3613fc44fdfae3fa61f466bfc49345f74e86b46a#egg=py_utils&subdirectory=../../../lib/py_utils
+-e git+ssh://git@github.com/hljeong/py_utils.git@3613fc44fdfae3fa61f466bfc49345f74e86b46a#egg=py_utils
 pytest==8.3.4
 tomli==2.2.1
