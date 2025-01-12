@@ -1,30 +1,33 @@
-# todo: python version, venv?
+include makefile_utils/defaults.mk
+
 CC = g++ -Wall -g -std=c++17
-PY = python3
+PYTHON = python3
 
-.PHONY: all clean test update cpp
+.PHONY: test clean update setup cpp
 
-all: test
+test: cpp venv-venv-activate-defined
+	@ # elaborate scheme to:
+	@ # - run c++ server in background,
+	@ # - run pytest,
+	@ # - wait for c++ server to terminate, and
+	@ # - verify both exited with 0
+	@ \
+	./a.out & . ./$(VENV_ACTIVATE) && python -m pytest -v; \
+	P=$$?; \
+	wait $$!; \
+	(exit $$?) && (exit $$P) && true || false
+	@ echo "all tests passed"
 
-clean:
-	rm -rf a.out
-	$(PY) -Bc "import pathlib; [p.unlink() for p in pathlib.Path('.').rglob('*.py[co]')]"  # delete .pyc and .pyo files
-	$(PY) -Bc "import pathlib; [p.rmdir() for p in pathlib.Path('.').rglob('__pycache__')]"  # delete __pycache__ directories
+clean: python-clean
+	@ rm -rf a.out
 
-test: cpp
-	@# elaborate scheme to:
-	@# - run c++ server in background,
-	@# - run pytest,
-	@# - wait for c++ server to terminate, and
-	@# - verify both exited with 0
-	@./a.out & $(PY) -m pytest -v; \
-		P=$$?; \
-		wait $$!; \
-		(exit $$?) && (exit $$P) && true || false
-	@echo "all tests passed"
+update: git-submodule-update
 
-update:
-	git submodule foreach 'git pull origin main && git submodule update --init'
+setup: git-hook-apply venv-setup
 
 cpp: cpp/server.h cpp/test.cc
-	@$(CC) cpp/test.cc
+	@ $(CC) cpp/test.cc
+
+include makefile_utils/git.mk
+include makefile_utils/python.mk
+include makefile_utils/venv.mk
