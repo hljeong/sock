@@ -1,0 +1,8 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sock"
+version = "0.0.1"
+description = "plug-and-play sockets"

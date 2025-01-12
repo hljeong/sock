@@ -1,5 +1,5 @@
 from py_utils.test import Parameters, parametrize  # type: ignore
-from sock.client import Client
+from sock import Client
 
 parameters = [
     Parameters("empty", b""),
