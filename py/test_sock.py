@@ -1,4 +1,4 @@
-from py_utils.test import Parameters, parametrize  # type: ignore
+from py_utils.test import Parameters, parametrize
 from sock import Client
 
 parameters = [
