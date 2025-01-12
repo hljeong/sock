@@ -1,6 +1,3 @@
-[submodule "lib/py_utils"]
-	path = lib/py_utils
-	url = git@github.com:hljeong/py_utils.git
 [submodule "makefile_utils"]
 	path = makefile_utils
 	url = git@github.com:hljeong/makefile_utils.git
