@@ -1,3 +1,5 @@
+from py_utils.context import Resource
+
 import socket
 import struct
 
@@ -9,67 +11,57 @@ KiB = 1024
 class Message:
     MAGIC = 0x94_84_86_95
     MAX_LEN = 8 * KiB
+    HEADER_LEN = 8
+    MAX_DATA_LEN = MAX_LEN - HEADER_LEN
 
 
-class Client:
+class Client(Resource):
     class ServerClosedError(Exception):
         pass
 
+    class BadDataReceivedError(Exception):
+        pass
+
     def __init__(self, port=3727):
+        super().__init__()
         self.socket = None
         self.port = port
 
-    def open(self):
-        if self.socket:
-            return False
-
+    def acquire(self):
+        # todo: [0] these are supposed to be typecheck-only asserts, make them so
+        assert self.socket is None
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        return True
+        self.socket.connect(("", self.port))
+        return self
 
-    def close(self):
-        if self.socket is None:
-            return False
-
+    def release(self):
+        # todo: see [0]
+        assert self.socket is not None
         self.socket.close()
         self.socket = None
-        return True
-
-    def connect(self):
-        if self.socket is None:
-            return False
-
-        try:
-            self.socket.connect(("", self.port))
-        except socket.error:
-            self.close()
-            raise
-
-        return True
 
     def send(self, data):
-        if self.socket is None:
-            return False
+        self.ensure_open()
+        # todo: see [0]
+        assert self.socket is not None
 
         if not isinstance(data, bytes):
-            raise ValueError()
+            raise ValueError(f"data must be of type bytes: {data!r}")
 
-        if len(data) > Message.MAX_LEN - 8:
-            return False
+        if len(data) > Message.MAX_DATA_LEN:
+            raise ValueError(
+                f"data too long: length {len(data)}, max {Message.MAX_DATA_LEN}"
+            )
 
-        data = (
-            struct.pack("<I", Message.MAGIC) + struct.pack("<I", len(data) + 8) + data
-        )
-        try:
-            self.socket.sendall(data)
-        except socket.error:
-            self.close()
-            raise
+        data = struct.pack("<I", Message.MAGIC) + struct.pack("<I", len(data)) + data
+        self.socket.sendall(data)
 
         return True
 
     def _recv(self, n):
-        if self.socket is None:
-            raise RuntimeError("socket closed")
+        self.ensure_open()
+        # todo: see [0]
+        assert self.socket is not None
 
         data = bytes()
         while len(data) < n:
@@ -81,37 +73,30 @@ class Client:
         return data
 
     def receive(self):
-        # todo: dont assume channel integrity and correlate?
-        magic_raw = self._recv(4)
-        if magic_raw is None:
-            self.close()
-            raise RuntimeError("could not recv magic")
+        self.ensure_open()
+        # todo: see [0]
+        assert self.socket is not None
 
-        # todo: dont raise error if correlating
+        # todo: dont assume channel integrity and correlate?
+        # todo: magic number
+        magic_raw = self._recv(4)
+
+        # todo: [2] dont raise error if correlating
         magic = int.from_bytes(magic_raw, "little")
         if magic != Message.MAGIC:
-            self.close()
-            raise RuntimeError(
+            raise Client.BadDataReceivedError(
                 f"bad magic: 0x{magic:08x}, expected 0x{Message.MAGIC:08x}"
             )
 
-        # todo: dont raise error if correlating
+        # todo: see [2]
         len_raw = self._recv(4)
-        if len_raw is None:
-            self.close()
-            raise RuntimeError("could not recv len")
 
-        # todo: dont raise error if correlating
+        # todo: see [2]
         len = int.from_bytes(len_raw, "little")
-        if len > Message.MAX_LEN:
-            self.close()
-            raise RuntimeError(f"bad len: {len}, max {Message.MAX_LEN}")
+        if len > Message.MAX_DATA_LEN:
+            raise Client.BadDataReceivedError(
+                f"bad data length: {len}, max {Message.MAX_DATA_LEN}"
+            )
 
-        # todo: dont raise error if correlating
-        data_len = len - 8
-        data = self._recv(data_len)
-        if data is None:
-            self.close()
-            raise RuntimeError("could not recv data")
-
-        return data
+        # todo: see [2]
+        return self._recv(len)

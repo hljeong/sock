@@ -26,10 +26,24 @@ union Message {
   static constexpr uint32_t MAGIC = 0x94'84'86'95u;
   static constexpr uint32_t MAX_LEN = 8_KiB;
 
+  struct __attribute__((packed)) Header {
+    uint32_t magic;
+    uint32_t len;
+  };
+
+  // todo: possible to deduplicate?
   struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t len;
-    uint8_t data[MAX_LEN - 8];
+  };
+
+  static constexpr uint32_t HEADER_LEN = sizeof(Header);
+  static_assert(HEADER_LEN <= MAX_LEN);
+  static constexpr uint32_t MAX_DATA_LEN = MAX_LEN - HEADER_LEN;
+
+  struct __attribute__((packed)) {
+    Header header;
+    uint8_t data[MAX_DATA_LEN];
   };
 
   struct {
@@ -37,41 +51,56 @@ union Message {
     uint32_t level = 0;
   };
 
+  uint32_t message_len() const { return HEADER_LEN + len; }
+
+  // return true if currently reading a valid message
   bool valid() const {
-    return magic == MAGIC && len <= MAX_LEN && len <= level;
+    return magic == MAGIC && len <= MAX_DATA_LEN && message_len() <= level;
   }
 
+  bool advance(uint32_t off) {
+    if (off > level) {
+      return false;
+    }
+
+    // important corner case:
+    // the logic below would zero everything out if off == 0
+    if (!off) {
+      return true;
+    }
+
+    for (uint32_t i = 0; i + off < level; ++i) {
+      raw[i] = raw[i + off];
+      raw[i + off] = 0;
+    }
+    level -= off;
+    return true;
+  }
+
+  bool shift() {
+    if (!valid()) {
+      return false;
+    }
+
+    return advance(message_len());
+  }
+
+  void clear() {
+    // must return true
+    advance(level);
+  }
+
+  // return true and advance to valid message if exists
   bool correlate() {
     for (uint32_t off = 0; off + sizeof(MAGIC) <= level; ++off) {
-      if (*reinterpret_cast<uint32_t *>(&raw[off]) == MAGIC) {
-        return shift(off);
+      if (reinterpret_cast<Message *>(&raw[off])->valid()) {
+        // must return true
+        advance(off);
+        return true;
       }
     }
     return false;
   }
-
-  bool shift(std::optional<const uint32_t> off = std::nullopt) {
-    if (!off) {
-      if (!valid()) {
-        return false;
-      }
-      uint32_t to_shift = len;
-      return shift(to_shift);
-    }
-
-    if (!*off) {
-      return true;
-    }
-
-    for (uint32_t i = 0; i + *off < level; ++i) {
-      raw[i] = raw[i + *off];
-      raw[i + *off] = 0;
-    }
-    level -= *off;
-    return true;
-  }
-
-  bool clear() { return shift(level); }
 };
 
 class Server {
@@ -106,24 +135,20 @@ public:
 
     const int option = 1;
     if (fcntl(m_socket, F_SETFL, O_NONBLOCK) < 0) {
-      close();
       return false;
     }
 
     if (::setsockopt(m_socket, SOL_SOCKET, SO_REUSEADDR, &option,
                      sizeof(option)) < 0) {
-      close();
       return false;
     }
 
     if (::bind(m_socket, reinterpret_cast<sockaddr *>(&m_addr),
                sizeof(m_addr)) < 0) {
-      close();
       return false;
     }
 
     if (::listen(m_socket, 1) < 0) {
-      close();
       return false;
     }
 
@@ -175,9 +200,7 @@ public:
 
     m_client_socket = -1;
 
-    if (!msg.clear()) {
-      return false;
-    }
+    msg.clear();
 
     return true;
   }
@@ -195,7 +218,7 @@ public:
       return false;
     }
 
-    if (len > Message::MAX_LEN - 8) {
+    if (len > Message::MAX_DATA_LEN) {
       return false;
     }
 
@@ -203,7 +226,7 @@ public:
       return false;
     }
 
-    if (!send_raw(len + 8)) {
+    if (!send_raw(len)) {
       return false;
     }
 
@@ -236,15 +259,13 @@ public:
     }
 
     msg.level += n;
-    msg.correlate();
-    while (msg.valid()) {
-      // todo: remove magic number
-      if (msg.len == 8 && m_close_on_empty) {
+    while (msg.correlate()) {
+      if (msg.len == 0 && m_close_on_empty) {
         m_stop_signaled = true;
         return true;
       }
 
-      m_callback(msg.data, msg.len - 8);
+      m_callback(msg.data, msg.len);
       msg.shift();
     }
 

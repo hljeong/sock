@@ -6,6 +6,7 @@ PYTHON = python3
 .PHONY: test clean update setup cpp
 
 test: cpp venv-venv-activate-defined
+	@ [ -z "$$(lsof -ti :3727)" ] || kill $$(lsof -ti :3727)
 	@ # elaborate scheme to:
 	@ # - run c++ server in background,
 	@ # - run pytest,
@@ -21,11 +22,11 @@ test: cpp venv-venv-activate-defined
 clean: python-clean
 	@ rm -rf a.out
 
-update: git-submodule-update
+update: git-submodule-update venv-force-install-deps
 
 setup: git-hook-install venv-setup
 
-cpp: cpp/server.h cpp/test.cc
+cpp: cpp/sock.h cpp/test.cc
 	@ $(CC) cpp/test.cc
 
 include makefile_utils/git.mk
