@@ -19,7 +19,7 @@ def test_sock(data):
 
 def test_sock_close():
     with Client() as c:
-        c.send(b"")
+        c.stop_server()
 
         with raises(Client.ServerClosedError):
             c.receive()

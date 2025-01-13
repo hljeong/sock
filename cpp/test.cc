@@ -36,7 +36,6 @@ int main() {
 
   s->start(5s);
   s->wait_for_stop();
-  s->close();
 
   assert(test_data_idx == all_test_data.size());
 }

@@ -56,8 +56,6 @@ class Client(Resource):
         data = struct.pack("<I", Message.MAGIC) + struct.pack("<I", len(data)) + data
         self.socket.sendall(data)
 
-        return True
-
     def _recv(self, n):
         self.ensure_open()
         # todo: see [0]
@@ -100,3 +98,6 @@ class Client(Resource):
 
         # todo: see [2]
         return self._recv(len)
+
+    def stop_server(self):
+        self.send(b"")
