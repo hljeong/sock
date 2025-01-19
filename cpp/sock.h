@@ -293,15 +293,15 @@ public:
     if (!m_client) {
       m_client = m_server->accept();
     } else {
+      // unfortunate compromised syntax due to compiler inability to deduce
+      // template type (specifically the typenames should be at where the
+      // autos are at)
+      // desired syntax (supposedly c++26 compliant):
+      // m_client->recv(...).visit(match{
+      //     [this](typename Server::Client::ConnectionClosed) { ...; },
+      //     [this](typename Server::Client::Data data) { ...; },
+      // });
       std::visit(
-          // unfortunate compromised syntax due to compiler inability to deduce
-          // template type (specifically the typenames should be at where the
-          // autos are at)
-          // desired syntax (supposedly c++26 compliant):
-          // m_client->recv(...).visit(match{
-          //     [this](typename Server::Client::ConnectionClosed) { ...; },
-          //     [this](typename Server::Client::Data data) { ...; },
-          // });
           visitor<typename Server::Client::ConnectionClosed,
                   typename Server::Client::Data>{
               [this](auto) { m_client.reset(); },
