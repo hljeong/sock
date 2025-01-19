@@ -84,6 +84,3 @@ class TCPClient(Resource):
             )
 
         return self._recv(len)
-
-    def stop_server(self):
-        self.send(b"")

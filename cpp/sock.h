@@ -8,9 +8,12 @@
 #include <functional>
 #include <netinet/in.h>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <variant>
 
 // todo: exception handling
 
@@ -86,335 +89,240 @@ union Message {
   }
 };
 
-class TCPServer {
+template <typename Dispatcher> class AutoDispatch {
 public:
-  TCPServer(
-      const std::function<void(const uint8_t *, uint32_t)> &callback =
-          [](auto, auto) {},
-      uint16_t port = 3727, bool close_on_empty = true)
-      : m_callback(callback), m_close_on_empty(close_on_empty) {
-    m_addr.sin_family = AF_INET;
-    m_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    m_addr.sin_port = htons(port);
+  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher,
+               std::chrono::seconds timeout, std::chrono::milliseconds interval)
+      : m_dispatcher(std::move(dispatcher)) {
+    using namespace std::chrono;
+    using namespace std::this_thread;
 
-    open();
-  }
-
-  virtual ~TCPServer() {
-    disconnect();
-    stop();
-    close();
-  }
-
-  bool open() {
-    if (m_socket >= 0) {
-      return false;
-    }
-
-    m_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (m_socket < 0) {
-      return false;
-    }
-
-    const int option = 1;
-    if (fcntl(m_socket, F_SETFL, O_NONBLOCK) < 0) {
-      return false;
-    }
-
-    if (::setsockopt(m_socket, SOL_SOCKET, SO_REUSEADDR, &option,
-                     sizeof(option)) < 0) {
-      return false;
-    }
-
-    if (::bind(m_socket, reinterpret_cast<sockaddr *>(&m_addr),
-               sizeof(m_addr)) < 0) {
-      return false;
-    }
-
-    if (::listen(m_socket, 1) < 0) {
-      return false;
-    }
-
-    return true;
-  }
-
-  bool close() {
-    if (m_socket < 0) {
-      return false;
-    }
-
-    if (::close(m_socket) < 0) {
-      return false;
-    }
-
-    m_socket = -1;
-    return true;
-  }
-
-  bool connect() {
-    if (m_client_socket >= 0) {
-      return false;
-    }
-
-    sockaddr client_addr{};
-    socklen_t client_addrlen = sizeof(client_addr);
-    m_client_socket =
-        accept4(m_socket, &client_addr, &client_addrlen, SOCK_CLOEXEC);
-    if (m_client_socket < 0) {
-      return errno == EAGAIN || errno == EWOULDBLOCK;
-    }
-
-    if (fcntl(m_client_socket, F_SETFL, O_NONBLOCK) < 0) {
-      disconnect();
-      return false;
-    }
-
-    return true;
-  }
-
-  bool disconnect() {
-    if (m_client_socket < 0) {
-      return false;
-    }
-
-    if (::close(m_client_socket) < 0) {
-      return false;
-    }
-
-    m_client_socket = -1;
-
-    msg.clear();
-
-    return true;
-  }
-
-  bool send(const std::vector<uint8_t> &data) {
-    return send(&data[0], data.size());
-  }
-
-  bool send(const uint8_t *data, uint32_t len) {
-    if (m_socket < 0) {
-      return false;
-    }
-
-    if (m_client_socket < 0) {
-      return false;
-    }
-
-    if (len > Message::MAX_DATA_LEN) {
-      return false;
-    }
-
-    if (!send_raw(len)) {
-      return false;
-    }
-
-    if (!send_raw(data, len)) {
-      return false;
-    }
-
-    return true;
-  }
-
-  bool receive() {
-    if (m_socket < 0) {
-      return false;
-    }
-
-    if (m_client_socket < 0) {
-      return false;
-    }
-
-    const ssize_t n = ::recv(m_client_socket, msg.raw + msg.level,
-                             Message::MAX_LEN - msg.level, 0);
-    if (n == 0) {
-      return disconnect();
-    } else if (n < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return true;
-      } else {
-        return false;
+    const bool live_forever = timeout == 0s;
+    const auto end = steady_clock::now() + timeout;
+    m_thread = std::thread([=]() {
+      while (!m_signal_stop && (live_forever || steady_clock::now() < end)) {
+        m_dispatcher->dispatch();
+        sleep_for(interval);
       }
+    });
+  }
+
+  template <typename Timeout, typename Interval>
+  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher, Timeout timeout,
+               Interval interval)
+      : AutoDispatch(
+            dispatcher,
+            std::chrono::duration_cast<std::chrono::seconds>(timeout),
+            std::chrono::duration_cast<std::chrono::milliseconds>(interval)) {}
+
+  template <typename Interval>
+  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher, Interval timeout)
+      : AutoDispatch(std::move(dispatcher), timeout,
+                     std::chrono::milliseconds(50)) {}
+
+  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher)
+      : AutoDispatch(std::move(dispatcher), std::chrono::seconds(0)) {}
+
+  virtual ~AutoDispatch() { stop(); }
+
+  const Dispatcher &operator*() const { return *m_dispatcher; }
+
+  Dispatcher &operator*() { return *m_dispatcher; }
+
+  const Dispatcher *operator->() const { return m_dispatcher.get(); }
+
+  Dispatcher *operator->() { return m_dispatcher.get(); }
+
+  void signal_stop() { m_signal_stop = true; }
+
+  void stop() {
+    signal_stop();
+    join();
+  }
+
+  void join() {
+    if (!m_thread.joinable()) {
+      return;
     }
 
-    msg.level += n;
-    while (msg.valid()) {
-      if (msg.len == 0 && m_close_on_empty) {
-        m_stop_signaled = true;
-        return true;
-      }
-
-      m_callback(msg.data, msg.len);
-      msg.shift();
-    }
-
-    return true;
-  }
-
-  bool dispatch() {
-    if (m_socket < 0) {
-      return false;
-    }
-
-    if (m_client_socket < 0) {
-      connect();
-    } else {
-      receive();
-    }
-
-    return true;
-  }
-
-  template <typename T, typename U> bool start(T timeout, U interval) {
-    using namespace std::chrono;
-    return start(duration_cast<seconds>(timeout),
-                 duration_cast<milliseconds>(interval));
-  }
-
-  // template parameters cannot be deduced from default arguments,
-  // i.e., template <typename T, typename U> bool start(T timeout = 0s, U
-  // interval = 50ms) is not possible
-  // manually overloading to achieve the same effect here
-  // see: https://stackoverflow.com/a/18981056
-  template <typename T> bool start(T timeout) {
-    using namespace std::chrono;
-    return start(duration_cast<seconds>(timeout), 50ms);
-  }
-
-  bool start() {
-    using namespace std::chrono;
-    return start(0s);
-  }
-
-  bool stop() {
-    if (!m_running) {
-      return false;
-    }
-
-    m_stop_signaled = true;
-    wait_for_stop();
-    return true;
-  }
-
-  bool running() const { return m_running; }
-
-  bool stopped() const { return !m_running; }
-
-  template <typename T, typename U> void wait_for_stop(T timeout, U interval) {
-    using namespace std::chrono;
-    return wait_for_stop(duration_cast<seconds>(timeout),
-                         duration_cast<milliseconds>(interval));
-  }
-
-  template <typename T> void wait_for_stop(T timeout) {
-    using namespace std::chrono;
-    wait_for_stop(duration_cast<seconds>(timeout), 50ms);
-  }
-
-  void wait_for_stop() {
-    using namespace std::chrono;
-    wait_for_stop(0s);
+    m_thread.join();
   }
 
 private:
-  template <typename T> bool send_raw(const T &data) {
-    return send_raw(reinterpret_cast<const uint8_t *>(&data), sizeof(T));
-  }
-
-  // clean up after server stopped
-  bool reset() {
-    if (m_running) {
-      return false;
-    }
-
-    if (!m_thread.joinable()) {
-      return false;
-    }
-
-    m_stop_signaled = false;
-    m_thread.join();
-    return true;
-  }
-
-  bool send_raw(const uint8_t *data, uint32_t len) {
-    // todo: are these checks needed in private member functions?
-    if (m_socket < 0) {
-      return false;
-    }
-
-    if (m_client_socket < 0) {
-      return false;
-    }
-
-    const ssize_t n = ::send(m_client_socket, data, len, 0);
-    // todo: possibly split into different cases:
-    //   - n < 0
-    //   - n == 0
-    //   - n > 0 && n < len
-    //   - n > len ???
-    if (n != len) {
-      disconnect();
-      return false;
-    }
-
-    return true;
-  }
-
-  sockaddr_in m_addr{};
-  int m_socket = -1;
-  int m_client_socket = -1;
-
-  Message msg{};
-  std::function<void(const uint8_t *, uint32_t)> m_callback;
-  bool m_close_on_empty;
-
-  std::thread m_thread{};
-  std::atomic_bool m_stop_signaled = false;
-  std::atomic_bool m_running = false;
+  std::unique_ptr<Dispatcher> m_dispatcher;
+  std::thread m_thread;
+  std::atomic_bool m_signal_stop = false;
 };
 
-template <>
-inline bool TCPServer::start<std::chrono::seconds, std::chrono::milliseconds>(
-    std::chrono::seconds timeout, std::chrono::milliseconds interval) {
-  using namespace std::chrono;
-  using namespace std::this_thread;
-
-  if (m_running) {
-    return false;
-  }
-
-  m_running = true;
-  const bool live_forever = timeout == 0s;
-  const auto end = steady_clock::now() + timeout;
-  m_thread = std::thread([=]() {
-    while (!m_stop_signaled && (live_forever || steady_clock::now() < end)) {
-      dispatch();
-      sleep_for(interval);
+class TCPServer {
+public:
+  class Client {
+  public:
+    Client(int fd) : m_fd(fd) {
+      if (m_fd < 0) {
+        throw std::runtime_error("invalid client fd: todo");
+      }
     }
-    m_running = false;
-  });
-  return true;
-}
 
-template <>
-inline void
-TCPServer::wait_for_stop<std::chrono::seconds, std::chrono::milliseconds>(
-    std::chrono::seconds timeout, std::chrono::milliseconds interval) {
-  using namespace std::chrono;
-  using namespace std::this_thread;
+    virtual ~Client() { ::close(m_fd); }
 
-  if (!m_running) {
-    return;
+    void send(const uint8_t *data, uint32_t len) {
+      const ssize_t n = ::send(m_fd, data, len, 0);
+      // todo: possibly split into different cases:
+      //   - n < 0
+      //   - n == 0
+      //   - n > 0 && n < len
+      //   - n > len ???
+      if (n != len) {
+        throw std::runtime_error("failed to send: todo");
+      }
+    }
+
+    struct ConnectionClosed {};
+    struct Data {
+      uint32_t length;
+    };
+    using RecvResult = std::variant<ConnectionClosed, Data>;
+
+    RecvResult recv(uint8_t *data, uint32_t len) {
+      const ssize_t n = ::recv(m_fd, data, len, 0);
+      if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          return Data{0};
+        } else {
+          throw std::runtime_error("failed to recv");
+        }
+      } else if (n == 0) {
+        return ConnectionClosed();
+      }
+      return Data{static_cast<uint32_t>(n)};
+    }
+
+  private:
+    const int m_fd;
+  };
+
+  TCPServer(uint16_t port)
+      : m_addr{.sin_family = AF_INET,
+               .sin_port = htons(port),
+               .sin_addr = {.s_addr = htonl(INADDR_ANY)}},
+        m_fd(socket(AF_INET, SOCK_STREAM, 0)) {
+    if (m_fd < 0) {
+      throw std::runtime_error("failed to open tcp socket: todo errno");
+    }
+
+    if (fcntl(m_fd, F_SETFL, O_NONBLOCK) < 0) {
+      throw std::runtime_error("failed to set nonblock: todo errno");
+    }
+
+    const int option = 1;
+    if (::setsockopt(m_fd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) <
+        0) {
+      throw std::runtime_error("failed to set reuseaddr: todo errno");
+    }
+
+    if (::bind(m_fd, reinterpret_cast<const sockaddr *>(&m_addr),
+               sizeof(m_addr)) < 0) {
+      throw std::runtime_error("failed to bind: todo errno");
+    }
+
+    if (::listen(m_fd, 1) < 0) {
+      throw std::runtime_error("failed to listen: todo errno");
+    }
   }
 
-  // todo: this timeout logic is duplicated, possible to extract?
-  const bool wait_forever = timeout == 0s;
-  const auto end = steady_clock::now();
-  while (m_running && (wait_forever || steady_clock::now() < end)) {
-    sleep_for(interval);
+  virtual ~TCPServer() { ::close(m_fd); }
+
+  std::unique_ptr<Client> accept() {
+    sockaddr addr;
+    socklen_t addrlen = sizeof(addr);
+    int client_fd = accept4(m_fd, &addr, &addrlen, SOCK_CLOEXEC);
+    if (client_fd < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return nullptr;
+      } else {
+        throw std::runtime_error("failed to accept: todo errno");
+      }
+    }
+
+    if (fcntl(client_fd, F_SETFL, O_NONBLOCK) < 0) {
+      throw std::runtime_error("failed to set client nonblock: todo errno");
+    }
+
+    return std::make_unique<Client>(client_fd);
   }
 
-  reset();
-}
+private:
+  const sockaddr_in m_addr;
+  const int m_fd = -1;
+};
+
+// todo: move helper out
+template <typename... Ts> struct overloads : Ts... {
+  using Ts::operator()...;
+};
+
+template <typename... Ts>
+struct visitor : overloads<std::function<void(Ts)>...> {};
+
+template <typename Server> class CallbackServer {
+public:
+  CallbackServer(std::unique_ptr<Server> server,
+                 const std::function<void(const uint8_t *, uint32_t)> &callback)
+      : m_server(std::move(server)), m_callback(callback) {}
+
+  virtual ~CallbackServer() = default;
+
+  void send(const std::vector<uint8_t> &data) { send(&data[0], data.size()); }
+
+  void send(const uint8_t *data, uint32_t len) {
+    if (!m_client) {
+      throw std::invalid_argument("client not connected");
+    }
+
+    if (len > Message::MAX_DATA_LEN) {
+      throw std::invalid_argument(
+          "message exceeds max size: todo bytes (max todo bytes)");
+    }
+
+    m_client->send(reinterpret_cast<uint8_t *>(&len), 4);
+    m_client->send(data, len);
+  }
+
+  void dispatch() {
+    if (!m_client) {
+      m_client = m_server->accept();
+    } else {
+      std::visit(
+          // unfortunate compromised syntax due to compiler inability to deduce
+          // template type (specifically the typenames should be at where the
+          // autos are at)
+          // desired syntax (supposedly c++26 compliant):
+          // m_client->recv(...).visit(match{
+          //     [this](typename Server::Client::ConnectionClosed) { ...; },
+          //     [this](typename Server::Client::Data data) { ...; },
+          // });
+          visitor<typename Server::Client::ConnectionClosed,
+                  typename Server::Client::Data>{
+              [this](auto) { m_client.reset(); },
+              [this](auto data) {
+                auto [len] = data;
+                msg.level += len;
+                while (msg.valid()) {
+                  m_callback(msg.data, msg.len);
+                  msg.shift();
+                }
+              },
+          },
+          m_client->recv(msg.raw + msg.level, Message::MAX_LEN - msg.level));
+    }
+  }
+
+private:
+  std::unique_ptr<Server> m_server;
+  std::unique_ptr<typename Server::Client> m_client;
+  std::function<void(const uint8_t *, uint32_t)> m_callback;
+  Message msg;
+};
 
 } // namespace sock

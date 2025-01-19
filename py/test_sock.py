@@ -19,7 +19,7 @@ def test_sock(data):
 
 def test_sock_close():
     with TCPClient() as c:
-        c.stop_server()
+        c.send(b"")
 
         with raises(TCPClient.ServerClosedError):
             c.receive()
