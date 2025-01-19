@@ -13,7 +13,7 @@ std::vector<TestData> all_test_data = {
 
 std::size_t test_data_idx = 0;
 
-std::unique_ptr<Server> s;
+std::unique_ptr<TCPServer> s;
 
 void callback(const uint8_t *data, const uint32_t len) {
   s->send(data, len);
@@ -32,7 +32,7 @@ int main() {
   using namespace std::chrono;
   using namespace std::this_thread;
 
-  s = std::make_unique<Server>(callback);
+  s = std::make_unique<TCPServer>(callback);
 
   s->start(5s);
   s->wait_for_stop();

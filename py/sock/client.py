@@ -9,13 +9,12 @@ KiB = 1024
 
 
 class Message:
-    MAGIC = 0x94_84_86_95
-    MAX_LEN = 8 * KiB
-    HEADER_LEN = 8
+    MAX_LEN = 128 * KiB
+    HEADER_LEN = 4
     MAX_DATA_LEN = MAX_LEN - HEADER_LEN
 
 
-class Client(Resource):
+class TCPClient(Resource):
     class ServerClosedError(Exception):
         pass
 
@@ -53,7 +52,7 @@ class Client(Resource):
                 f"data too long: length {len(data)}, max {Message.MAX_DATA_LEN}"
             )
 
-        data = struct.pack("<I", Message.MAGIC) + struct.pack("<I", len(data)) + data
+        data = struct.pack("<I", len(data)) + data
         self.socket.sendall(data)
 
     def _recv(self, n):
@@ -65,7 +64,7 @@ class Client(Resource):
         while len(data) < n:
             recv_data = self.socket.recv(n - len(data))
             if len(recv_data) == 0:
-                raise Client.ServerClosedError("connection closed")
+                raise TCPClient.ServerClosedError("connection closed")
             data += recv_data
 
         return data
@@ -75,28 +74,15 @@ class Client(Resource):
         # todo: see [0]
         assert self.socket is not None
 
-        # todo: dont assume channel integrity and correlate?
         # todo: magic number
-        magic_raw = self._recv(4)
-
-        # todo: [2] dont raise error if correlating
-        magic = int.from_bytes(magic_raw, "little")
-        if magic != Message.MAGIC:
-            raise Client.BadDataReceivedError(
-                f"bad magic: 0x{magic:08x}, expected 0x{Message.MAGIC:08x}"
-            )
-
-        # todo: see [2]
         len_raw = self._recv(4)
 
-        # todo: see [2]
         len = int.from_bytes(len_raw, "little")
         if len > Message.MAX_DATA_LEN:
-            raise Client.BadDataReceivedError(
+            raise TCPClient.BadDataReceivedError(
                 f"bad data length: {len}, max {Message.MAX_DATA_LEN}"
             )
 
-        # todo: see [2]
         return self._recv(len)
 
     def stop_server(self):

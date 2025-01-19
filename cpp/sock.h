@@ -23,17 +23,14 @@ constexpr uint32_t operator""_KiB(const unsigned long long kib) {
 }
 
 union Message {
-  static constexpr uint32_t MAGIC = 0x94'84'86'95u;
-  static constexpr uint32_t MAX_LEN = 8_KiB;
+  static constexpr uint32_t MAX_LEN = 128_KiB;
 
   struct __attribute__((packed)) Header {
-    uint32_t magic;
     uint32_t len;
   };
 
   // todo: possible to deduplicate?
   struct __attribute__((packed)) {
-    uint32_t magic;
     uint32_t len;
   };
 
@@ -53,10 +50,8 @@ union Message {
 
   uint32_t message_len() const { return HEADER_LEN + len; }
 
-  // return true if currently reading a valid message
-  bool valid() const {
-    return magic == MAGIC && len <= MAX_DATA_LEN && message_len() <= level;
-  }
+  // return true if a full message is buffered
+  bool valid() const { return message_len() <= level; }
 
   bool advance(uint32_t off) {
     if (off > level) {
@@ -89,23 +84,11 @@ union Message {
     // must return true
     advance(level);
   }
-
-  // return true and advance to valid message if exists
-  bool correlate() {
-    for (uint32_t off = 0; off + sizeof(MAGIC) <= level; ++off) {
-      if (reinterpret_cast<Message *>(&raw[off])->valid()) {
-        // must return true
-        advance(off);
-        return true;
-      }
-    }
-    return false;
-  }
 };
 
-class Server {
+class TCPServer {
 public:
-  Server(
+  TCPServer(
       const std::function<void(const uint8_t *, uint32_t)> &callback =
           [](auto, auto) {},
       uint16_t port = 3727, bool close_on_empty = true)
@@ -117,7 +100,7 @@ public:
     open();
   }
 
-  virtual ~Server() {
+  virtual ~TCPServer() {
     disconnect();
     stop();
     close();
@@ -222,10 +205,6 @@ public:
       return false;
     }
 
-    if (!send_raw(Message::MAGIC)) {
-      return false;
-    }
-
     if (!send_raw(len)) {
       return false;
     }
@@ -259,7 +238,7 @@ public:
     }
 
     msg.level += n;
-    while (msg.correlate()) {
+    while (msg.valid()) {
       if (msg.len == 0 && m_close_on_empty) {
         m_stop_signaled = true;
         return true;
@@ -395,7 +374,7 @@ private:
 };
 
 template <>
-inline bool Server::start<std::chrono::seconds, std::chrono::milliseconds>(
+inline bool TCPServer::start<std::chrono::seconds, std::chrono::milliseconds>(
     std::chrono::seconds timeout, std::chrono::milliseconds interval) {
   using namespace std::chrono;
   using namespace std::this_thread;
@@ -419,7 +398,7 @@ inline bool Server::start<std::chrono::seconds, std::chrono::milliseconds>(
 
 template <>
 inline void
-Server::wait_for_stop<std::chrono::seconds, std::chrono::milliseconds>(
+TCPServer::wait_for_stop<std::chrono::seconds, std::chrono::milliseconds>(
     std::chrono::seconds timeout, std::chrono::milliseconds interval) {
   using namespace std::chrono;
   using namespace std::this_thread;

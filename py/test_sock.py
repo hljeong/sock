@@ -1,7 +1,7 @@
 from pytest import raises
 
 from py_utils.test import Parameters, parametrize
-from sock import Client
+from sock import TCPClient
 
 parameters = [
     Parameters("one byte", b"\x12"),
@@ -11,15 +11,15 @@ parameters = [
 
 @parametrize("data", parameters)
 def test_sock(data):
-    with Client() as c:
+    with TCPClient() as c:
         c.send(data)
 
         assert c.receive() == data
 
 
 def test_sock_close():
-    with Client() as c:
+    with TCPClient() as c:
         c.stop_server()
 
-        with raises(Client.ServerClosedError):
+        with raises(TCPClient.ServerClosedError):
             c.receive()
