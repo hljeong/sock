@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include <variant>
 
+#include "../lib/cpp_utils/sugar/sugar.h"
+
 // todo: exception handling
 
 namespace sock {
@@ -87,71 +89,6 @@ union Message {
     // must return true
     advance(level);
   }
-};
-
-template <typename Dispatcher> class AutoDispatch {
-public:
-  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher,
-               std::chrono::seconds timeout, std::chrono::milliseconds interval)
-      : m_dispatcher(std::move(dispatcher)) {
-    using namespace std::chrono;
-    using namespace std::this_thread;
-
-    const bool live_forever = timeout == 0s;
-    const auto end = steady_clock::now() + timeout;
-    m_thread = std::thread([=]() {
-      while (!m_signal_stop && (live_forever || steady_clock::now() < end)) {
-        m_dispatcher->dispatch();
-        sleep_for(interval);
-      }
-    });
-  }
-
-  template <typename Timeout, typename Interval>
-  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher, Timeout timeout,
-               Interval interval)
-      : AutoDispatch(
-            dispatcher,
-            std::chrono::duration_cast<std::chrono::seconds>(timeout),
-            std::chrono::duration_cast<std::chrono::milliseconds>(interval)) {}
-
-  template <typename Interval>
-  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher, Interval timeout)
-      : AutoDispatch(std::move(dispatcher), timeout,
-                     std::chrono::milliseconds(50)) {}
-
-  AutoDispatch(std::unique_ptr<Dispatcher> dispatcher)
-      : AutoDispatch(std::move(dispatcher), std::chrono::seconds(0)) {}
-
-  virtual ~AutoDispatch() { stop(); }
-
-  const Dispatcher &operator*() const { return *m_dispatcher; }
-
-  Dispatcher &operator*() { return *m_dispatcher; }
-
-  const Dispatcher *operator->() const { return m_dispatcher.get(); }
-
-  Dispatcher *operator->() { return m_dispatcher.get(); }
-
-  void signal_stop() { m_signal_stop = true; }
-
-  void stop() {
-    signal_stop();
-    join();
-  }
-
-  void join() {
-    if (!m_thread.joinable()) {
-      return;
-    }
-
-    m_thread.join();
-  }
-
-private:
-  std::unique_ptr<Dispatcher> m_dispatcher;
-  std::thread m_thread;
-  std::atomic_bool m_signal_stop = false;
 };
 
 class TCPServer {
@@ -257,18 +194,12 @@ private:
   const int m_fd = -1;
 };
 
-// todo: move helper out
-template <typename... Ts> struct overloads : Ts... {
-  using Ts::operator()...;
-};
-
-// deduction guide needed pre c++20
-template <typename... Ts> overloads(Ts...) -> overloads<Ts...>;
-
 template <typename Server> class CallbackServer {
 public:
-  CallbackServer(std::unique_ptr<Server> server,
-                 const std::function<void(const uint8_t *, uint32_t)> &callback)
+  using Callback = std::function<void(const uint8_t *, uint32_t)>;
+  using Client = typename Server::Client;
+
+  CallbackServer(std::unique_ptr<Server> server, const Callback &callback)
       : m_server(std::move(server)), m_callback(callback) {}
 
   virtual ~CallbackServer() = default;
@@ -293,17 +224,20 @@ public:
     if (!m_client) {
       m_client = m_server->accept();
     } else {
-      // desired syntax (std::variant::visit in c++26):
+      // desired syntax:
       // m_client->recv(...).visit(match{
-      //     [this](typename Server::Client::ConnectionClosed) { ...; },
-      //     [this](typename Server::Client::Data [len]) { ...; },
+      //     [this](typename Client::ConnectionClosed) { ...; },
+      //     [this](typename Client::Data [len]) { ...; },
       // });
+      //
+      // note:
+      // - std::variant::visit is in c++26
+      // - for structured binding in arguments, see p0931:
+      // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0931r0.pdf
       std::visit(
-          overloads{
-              [this](typename Server::Client::ConnectionClosed) {
-                m_client.reset();
-              },
-              [this](typename Server::Client::Data data) {
+          sugar::overloads{
+              [this](typename Client::ConnectionClosed) { m_client.reset(); },
+              [this](typename Client::Data data) {
                 auto [len] = data;
                 msg.level += len;
                 while (msg.valid()) {
@@ -318,9 +252,16 @@ public:
 
 private:
   std::unique_ptr<Server> m_server;
-  std::unique_ptr<typename Server::Client> m_client;
-  std::function<void(const uint8_t *, uint32_t)> m_callback;
+  std::unique_ptr<Client> m_client;
+  Callback m_callback;
   Message msg;
+};
+
+class TCPCallbackServer : public CallbackServer<TCPServer> {
+public:
+  TCPCallbackServer(uint16_t port, const Callback &callback)
+      : CallbackServer<TCPServer>(std::make_unique<TCPServer>(port), callback) {
+  }
 };
 
 } // namespace sock

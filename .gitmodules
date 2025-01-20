@@ -1,3 +1,6 @@
 [submodule "makefile_utils"]
 	path = makefile_utils
 	url = git@github.com:hljeong/makefile_utils.git
+[submodule "lib/cpp_utils"]
+	path = lib/cpp_utils
+	url = git@github.com:hljeong/cpp_utils.git

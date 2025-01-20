@@ -1,8 +1,11 @@
 #include <cassert>
+#include <memory>
 
+#include "../lib/cpp_utils/srv/srv.h"
 #include "sock.h"
 
 using namespace sock;
+using namespace srv;
 using namespace std;
 using namespace std::chrono;
 using TestData = vector<uint8_t>;
@@ -16,9 +19,7 @@ size_t test_data_idx = 0;
 
 void callback(const uint8_t *data, uint32_t len);
 
-auto s_tcp = make_unique<TCPServer>(3727);
-auto s_cb = make_unique<CallbackServer<TCPServer>>(std::move(s_tcp), callback);
-AutoDispatch s(std::move(s_cb), 1s);
+AutoDispatch s(make_unique<TCPCallbackServer>(3727, callback), 1s);
 
 void callback(const uint8_t *data, uint32_t len) {
   if (len == 0) {
