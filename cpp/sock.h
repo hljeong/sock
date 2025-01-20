@@ -262,8 +262,8 @@ template <typename... Ts> struct overloads : Ts... {
   using Ts::operator()...;
 };
 
-template <typename... Ts>
-struct visitor : overloads<std::function<void(Ts)>...> {};
+// deduction guide needed pre c++20
+template <typename... Ts> overloads(Ts...) -> overloads<Ts...>;
 
 template <typename Server> class CallbackServer {
 public:
@@ -293,19 +293,17 @@ public:
     if (!m_client) {
       m_client = m_server->accept();
     } else {
-      // unfortunate compromised syntax due to compiler inability to deduce
-      // template type (specifically the typenames should be at where the
-      // autos are at)
-      // desired syntax (supposedly c++26 compliant):
+      // desired syntax (std::variant::visit in c++26):
       // m_client->recv(...).visit(match{
       //     [this](typename Server::Client::ConnectionClosed) { ...; },
-      //     [this](typename Server::Client::Data data) { ...; },
+      //     [this](typename Server::Client::Data [len]) { ...; },
       // });
       std::visit(
-          visitor<typename Server::Client::ConnectionClosed,
-                  typename Server::Client::Data>{
-              [this](auto) { m_client.reset(); },
-              [this](auto data) {
+          overloads{
+              [this](typename Server::Client::ConnectionClosed) {
+                m_client.reset();
+              },
+              [this](typename Server::Client::Data data) {
                 auto [len] = data;
                 msg.level += len;
                 while (msg.valid()) {
