@@ -1,4 +1,5 @@
-#pragma once
+#ifndef SOCK_H
+#define SOCK_H
 
 #include <atomic>
 #include <chrono>
@@ -15,7 +16,7 @@
 #include <unistd.h>
 #include <variant>
 
-#include "../lib/cpp_utils/sugar/sugar.h"
+#include "../lib/cpp_utils/sgr/sgr.h"
 
 // todo: exception handling
 
@@ -116,9 +117,11 @@ public:
     }
 
     struct ConnectionClosed {};
+
     struct Data {
       uint32_t length;
     };
+
     using RecvResult = std::variant<ConnectionClosed, Data>;
 
     RecvResult recv(uint8_t *data, uint32_t len) {
@@ -235,7 +238,7 @@ public:
       // - for structured binding in arguments, see p0931:
       // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0931r0.pdf
       std::visit(
-          sugar::overloads{
+          sgr::overloads{
               [this](typename Client::ConnectionClosed) { m_client.reset(); },
               [this](typename Client::Data data) {
                 auto [len] = data;
@@ -265,3 +268,5 @@ public:
 };
 
 } // namespace sock
+
+#endif
