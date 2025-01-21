@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <variant>
 
+#include "../lib/cpp_utils/res/res.h"
 #include "../lib/cpp_utils/sgr/sgr.h"
 
 // todo: exception handling
@@ -116,26 +117,24 @@ public:
       }
     }
 
-    struct ConnectionClosed {};
+    enum class RecvError { ConnectionClosed, RecvFailed };
 
     struct Data {
       uint32_t length;
     };
 
-    using RecvResult = std::variant<ConnectionClosed, Data>;
-
-    RecvResult recv(uint8_t *data, uint32_t len) {
+    res::Result<uint32_t, RecvError> recv(uint8_t *data, uint32_t len) {
       const ssize_t n = ::recv(m_fd, data, len, 0);
       if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          return Data{0};
+          return res::Ok<uint32_t>(0);
         } else {
-          throw std::runtime_error("failed to recv");
+          throw res::Err(RecvError::RecvFailed);
         }
       } else if (n == 0) {
-        return ConnectionClosed();
+        return res::Err(RecvError::ConnectionClosed);
       }
-      return Data{static_cast<uint32_t>(n)};
+      return res::Ok<uint32_t>(n);
     }
 
   private:
@@ -227,29 +226,22 @@ public:
     if (!m_client) {
       m_client = m_server->accept();
     } else {
-      // desired syntax:
-      // m_client->recv(...).visit(match{
-      //     [this](typename Client::ConnectionClosed) { ...; },
-      //     [this](typename Client::Data [len]) { ...; },
-      // });
-      //
-      // note:
-      // - std::variant::visit is in c++26
-      // - for structured binding in arguments, see p0931:
-      // https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0931r0.pdf
-      std::visit(
-          sgr::overloads{
-              [this](typename Client::ConnectionClosed) { m_client.reset(); },
-              [this](typename Client::Data data) {
-                auto [len] = data;
+      m_client->recv(msg.raw + msg.level, Message::MAX_LEN - msg.level)
+          .match_do(
+              [this](auto len) {
                 msg.level += len;
                 while (msg.valid()) {
                   m_callback(msg.data, msg.len);
                   msg.shift();
                 }
               },
-          },
-          m_client->recv(msg.raw + msg.level, Message::MAX_LEN - msg.level));
+              [this](auto err) {
+                if (err == Client::RecvError::RecvFailed) {
+                  throw std::runtime_error("failed to recv");
+                } else {
+                  m_client.reset();
+                }
+              });
     }
   }
 
