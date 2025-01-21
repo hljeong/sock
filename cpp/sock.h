@@ -7,6 +7,8 @@
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
+#include <list>
+#include <map>
 #include <netinet/in.h>
 #include <optional>
 #include <stdexcept>
@@ -103,7 +105,28 @@ public:
       }
     }
 
-    virtual ~Client() { ::close(m_fd); }
+    virtual ~Client() noexcept {
+      if (m_fd < 0) {
+        return;
+      };
+
+      ::close(m_fd);
+    }
+
+    Client(Client &&other) noexcept : m_fd(other.m_fd) { other.m_fd = -1; };
+
+    Client &operator=(Client &&other) noexcept {
+      if (this != &other) {
+        if (m_fd >= 0) {
+          ::close(m_fd);
+        }
+
+        m_fd = other.m_fd;
+        other.m_fd = -1;
+      }
+
+      return *this;
+    }
 
     void send(const uint8_t *data, uint32_t len) {
       const ssize_t n = ::send(m_fd, data, len, 0);
@@ -118,10 +141,6 @@ public:
     }
 
     enum class RecvError { ConnectionClosed, RecvFailed };
-
-    struct Data {
-      uint32_t length;
-    };
 
     res::Result<uint32_t, RecvError> recv(uint8_t *data, uint32_t len) {
       const ssize_t n = ::recv(m_fd, data, len, 0);
@@ -138,7 +157,7 @@ public:
     }
 
   private:
-    const int m_fd;
+    int m_fd;
   };
 
   TCPServer(uint16_t port)
@@ -170,84 +189,163 @@ public:
     }
   }
 
-  virtual ~TCPServer() { ::close(m_fd); }
+  virtual ~TCPServer() noexcept {
+    if (m_fd < 0) {
+      return;
+    }
 
-  std::unique_ptr<Client> accept() {
+    ::close(m_fd);
+  }
+
+  TCPServer(TCPServer &&other) noexcept
+      : m_addr(other.m_addr), m_fd(other.m_fd) {
+    other.m_addr = {};
+    other.m_fd = -1;
+  };
+
+  TCPServer &operator=(TCPServer &&other) noexcept {
+    if (this != &other) {
+      if (m_fd >= 0) {
+        ::close(m_fd);
+      }
+
+      m_addr = other.m_addr;
+      m_fd = other.m_fd;
+      other.m_addr = {};
+      other.m_fd = -1;
+    }
+
+    return *this;
+  }
+
+  enum class AcceptError {
+    NoNewConnection,
+    AcceptFailed,
+    SetNonblockFailed,
+  };
+
+  // todo: maybe should be Result<OneOf<Client, NoNewConnection>, AcceptError>
+  // instead?
+  res::Result<Client, AcceptError> accept() {
     sockaddr addr;
     socklen_t addrlen = sizeof(addr);
     int client_fd = accept4(m_fd, &addr, &addrlen, SOCK_CLOEXEC);
     if (client_fd < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return nullptr;
+        return res::Err(AcceptError::NoNewConnection);
       } else {
-        throw std::runtime_error("failed to accept: todo errno");
+        // throw std::runtime_error("failed to accept: todo errno");
+        // todo: errno info
+        return res::Err(AcceptError::AcceptFailed);
       }
     }
 
     if (fcntl(client_fd, F_SETFL, O_NONBLOCK) < 0) {
-      throw std::runtime_error("failed to set client nonblock: todo errno");
+      // throw std::runtime_error("failed to set client nonblock: todo errno");
+      // todo: errno info
+      return res::Err(AcceptError::SetNonblockFailed);
     }
 
-    return std::make_unique<Client>(client_fd);
+    return res::Ok(Client(client_fd));
   }
 
 private:
-  const sockaddr_in m_addr;
-  const int m_fd = -1;
+  sockaddr_in m_addr;
+  int m_fd = -1;
 };
 
 template <typename Server> class CallbackServer {
 public:
   using Callback = std::function<void(const uint8_t *, uint32_t)>;
   using Client = typename Server::Client;
+  using ClientId = uint32_t;
 
-  CallbackServer(std::unique_ptr<Server> server, const Callback &callback)
+  CallbackServer(Server &&server, Callback callback)
       : m_server(std::move(server)), m_callback(callback) {}
 
   virtual ~CallbackServer() = default;
 
-  void send(const std::vector<uint8_t> &data) { send(&data[0], data.size()); }
+  CallbackServer(CallbackServer &&) noexcept = default;
 
-  void send(const uint8_t *data, uint32_t len) {
-    if (!m_client) {
-      throw std::invalid_argument("client not connected");
+  CallbackServer &operator=(CallbackServer &&) noexcept = default;
+
+  // todo: explore send(ClientId, Data) where Data is a sum type
+  void send(ClientId client_id, const std::vector<uint8_t> &data) {
+    send(client_id, &data[0], data.size());
+  }
+
+  void send(ClientId client_id, const uint8_t *data, uint32_t len) {
+    if (!m_clients.count(client_id)) {
+      // todo: return a Result
+      throw std::invalid_argument("nonexistent client id: [todo|client_id]");
     }
 
     if (len > Message::MAX_DATA_LEN) {
+      // todo: return a Result
       throw std::invalid_argument(
           "message exceeds max size: todo bytes (max todo bytes)");
     }
 
-    m_client->send(reinterpret_cast<uint8_t *>(&len), 4);
-    m_client->send(data, len);
+    Client &client = m_clients.at(client_id);
+    client.send(reinterpret_cast<uint8_t *>(&len), 4);
+    client.send(data, len);
+  }
+
+  void send(const std::vector<uint8_t> &data) { send(&data[0], data.size()); }
+
+  void send(const uint8_t *data, uint32_t len) {
+    for (const auto &[client_id, _] : m_clients) {
+      send(client_id, data, len);
+    }
   }
 
   void dispatch() {
-    if (!m_client) {
-      m_client = m_server->accept();
-    } else {
-      m_client->recv(msg.raw + msg.level, Message::MAX_LEN - msg.level)
-          .match_do(
-              [this](auto len) {
-                msg.level += len;
-                while (msg.valid()) {
-                  m_callback(msg.data, msg.len);
-                  msg.shift();
-                }
-              },
-              [this](auto err) {
-                if (err == Client::RecvError::RecvFailed) {
-                  throw std::runtime_error("failed to recv");
-                } else {
-                  m_client.reset();
-                }
-              });
+    // todo: return Result<OneOf<ClientId, NoNewConnection>, ...>
+    m_server.accept().match_do(
+        [&](auto client) {
+          m_clients.emplace(m_client_id++, std::move(client));
+        },
+        [](auto err) {
+          // todo: better syntax than this? (match-like?)
+          if (err == Server::AcceptError::NoNewConnection) {
+            // no-op
+          } else if (err == Server::AcceptError::AcceptFailed) {
+            throw std::runtime_error("failed to accept");
+          } else if (err == Server::AcceptError::SetNonblockFailed) {
+            throw std::runtime_error("failed to set nonblock");
+          } else {
+            throw std::runtime_error("unknown accept failure");
+          }
+        });
+
+    for (auto &[client_id, client] : m_clients) {
+      service(client_id, client);
     }
   }
 
 private:
-  std::unique_ptr<Server> m_server;
-  std::unique_ptr<Client> m_client;
+  void service(ClientId client_id, Client &client) {
+    client.recv(msg.raw + msg.level, Message::MAX_LEN - msg.level)
+        .match_do(
+            [&](auto len) {
+              msg.level += len;
+              while (msg.valid()) {
+                m_callback(msg.data, msg.len);
+                msg.shift();
+              }
+            },
+            [&](auto err) {
+              if (err == Client::RecvError::RecvFailed) {
+                throw std::runtime_error("failed to recv");
+              } else {
+                m_clients.erase(client_id);
+              }
+            });
+  }
+
+  Server m_server;
+  ClientId m_client_id = 0;
+  std::map<ClientId, Client> m_clients;
   Callback m_callback;
   Message msg;
 };
@@ -255,8 +353,7 @@ private:
 class TCPCallbackServer : public CallbackServer<TCPServer> {
 public:
   TCPCallbackServer(uint16_t port, const Callback &callback)
-      : CallbackServer<TCPServer>(std::make_unique<TCPServer>(port), callback) {
-  }
+      : CallbackServer<TCPServer>(TCPServer(port), callback) {}
 };
 
 } // namespace sock
