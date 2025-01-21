@@ -221,7 +221,6 @@ public:
 
   struct NoNewClient {};
 
-  // using AcceptRes = sum::OneOf<Client, NoNewClient>;
   using AcceptRes = sum::OneOf<Client, NoNewClient>;
 
   enum class AcceptError {
@@ -268,7 +267,7 @@ public:
   CallbackServer(Server &&server, Callback callback)
       : m_server(std::move(server)), m_callback(callback) {}
 
-  virtual ~CallbackServer() = default;
+  virtual ~CallbackServer() noexcept = default;
 
   CallbackServer(CallbackServer &&) noexcept = default;
 
@@ -320,13 +319,19 @@ public:
                                    }});
         },
         [](auto err) {
-          // todo: better syntax than this? (match-like?)
-          if (err == Server::AcceptError::AcceptFailed) {
+          switch (err) {
+          case Server::AcceptError::AcceptFailed: {
             throw std::runtime_error("failed to accept");
-          } else if (err == Server::AcceptError::SetNonblockFailed) {
-            throw std::runtime_error("failed to set nonblock");
-          } else {
+            break;
+          }
+          case Server::AcceptError::SetNonblockFailed: {
+            throw std::runtime_error("failed set nonblock");
+            break;
+          }
+          default: {
             throw std::runtime_error("unknown accept failure");
+            break;
+          }
           }
         });
 
@@ -347,10 +352,19 @@ private:
               }
             },
             [&](auto err) {
-              if (err == Client::RecvError::RecvFailed) {
+              switch (err) {
+              case Client::RecvError::RecvFailed: {
                 throw std::runtime_error("failed to recv");
-              } else {
+                break;
+              }
+              case Client::RecvError::ConnectionClosed: {
                 m_clients.erase(client_id);
+                break;
+              }
+              default: {
+                throw std::runtime_error("unknown recv failure");
+                break;
+              }
               }
             });
   }
