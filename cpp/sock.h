@@ -20,6 +20,7 @@
 
 #include "../lib/cpp_utils/res/res.h"
 #include "../lib/cpp_utils/sgr/sgr.h"
+#include "../lib/cpp_utils/sum/sum.h"
 
 // todo: exception handling
 
@@ -218,21 +219,25 @@ public:
     return *this;
   }
 
+  struct NoNewClient {};
+
+  // using AcceptRes = sum::OneOf<Client, NoNewClient>;
+  using AcceptRes = sum::OneOf<Client, NoNewClient>;
+
   enum class AcceptError {
-    NoNewConnection,
     AcceptFailed,
     SetNonblockFailed,
   };
 
-  // todo: maybe should be Result<OneOf<Client, NoNewConnection>, AcceptError>
-  // instead?
-  res::Result<Client, AcceptError> accept() {
+  // todo: consider Result<Ts..., E> design
+  // perhaps with a Result<Oneof<Ts...>, E> Result<Ts..., E>::as_binary()
+  res::Result<AcceptRes, AcceptError> accept() {
     sockaddr addr;
     socklen_t addrlen = sizeof(addr);
     int client_fd = accept4(m_fd, &addr, &addrlen, SOCK_CLOEXEC);
     if (client_fd < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return res::Err(AcceptError::NoNewConnection);
+        return res::Ok(AcceptRes(NoNewClient()));
       } else {
         // throw std::runtime_error("failed to accept: todo errno");
         // todo: errno info
@@ -246,7 +251,7 @@ public:
       return res::Err(AcceptError::SetNonblockFailed);
     }
 
-    return res::Ok(Client(client_fd));
+    return res::Ok(AcceptRes(Client(client_fd)));
   }
 
 private:
@@ -300,16 +305,20 @@ public:
   }
 
   void dispatch() {
-    // todo: return Result<OneOf<ClientId, NoNewConnection>, ...>
+    // todo: return Result<OneOf<ClientId, NoNewClient>, ...>
     m_server.accept().match_do(
-        [&](auto client) {
-          m_clients.emplace(m_client_id++, std::move(client));
+        [&](auto res) {
+          res.visit(sgr::overloads{[&](Client &client) {
+                                     m_clients.emplace(m_client_id++,
+                                                       std::move(client));
+                                   },
+                                   [&](typename Server::NoNewClient) {
+                                     // no-op
+                                   }});
         },
         [](auto err) {
           // todo: better syntax than this? (match-like?)
-          if (err == Server::AcceptError::NoNewConnection) {
-            // no-op
-          } else if (err == Server::AcceptError::AcceptFailed) {
+          if (err == Server::AcceptError::AcceptFailed) {
             throw std::runtime_error("failed to accept");
           } else if (err == Server::AcceptError::SetNonblockFailed) {
             throw std::runtime_error("failed to set nonblock");
