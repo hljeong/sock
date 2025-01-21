@@ -274,6 +274,9 @@ public:
 
   CallbackServer &operator=(CallbackServer &&) noexcept = default;
 
+  CallbackServer(CallbackServer &&other, Callback callback) noexcept
+      : m_server(std::move(other.m_server)), m_callback(callback) {}
+
   // todo: explore send(ClientId, Data) where Data is a sum type
   void send(ClientId client_id, const std::vector<uint8_t> &data) {
     send(client_id, &data[0], data.size());
@@ -363,6 +366,9 @@ class TCPCallbackServer : public CallbackServer<TCPServer> {
 public:
   TCPCallbackServer(uint16_t port, const Callback &callback)
       : CallbackServer<TCPServer>(TCPServer(port), callback) {}
+
+  TCPCallbackServer(TCPCallbackServer &&other, Callback callback) noexcept
+      : CallbackServer<TCPServer>(std::move(other), callback) {}
 };
 
 } // namespace sock
